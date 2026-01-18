@@ -1,4 +1,9 @@
-import face_recognition
+try:
+    import face_recognition
+    FACE_RECOGNITION_AVAILABLE = True
+except ImportError:
+    FACE_RECOGNITION_AVAILABLE = False
+    print("[Warning] face_recognition not installed - face detection disabled")
 import cv2
 import pickle
 import os
@@ -41,6 +46,9 @@ class FaceHandler:
             tuple: (face_locations, face_names, face_encodings)
                    - face_locations are scaled back to original frame size
         """
+        if not FACE_RECOGNITION_AVAILABLE:
+            return [], [], []
+            
         # Resize for speed
         scale = 0.5
         small_frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)

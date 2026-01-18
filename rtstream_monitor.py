@@ -9,8 +9,16 @@ import os
 from enum import Enum
 from dataclasses import dataclass
 from typing import Optional, Callable
-import videodb
-from videodb import SceneExtractionType
+
+# VideoDB is optional - RTStream features disabled if not installed
+try:
+    import videodb
+    from videodb import SceneExtractionType
+    VIDEODB_AVAILABLE = True
+except ImportError:
+    VIDEODB_AVAILABLE = False
+    videodb = None
+    SceneExtractionType = None
 
 
 # ==================== DETECTION SCENARIOS ====================
