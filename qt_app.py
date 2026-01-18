@@ -2136,13 +2136,13 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
         
-        self.live_tab = LiveTab(self.face_handler, self.data_manager)
+
         self.video_tab = VideoAnalysisTab()
         self.grid_tab = GridTab(self.multi_cam)
         self.settings_tab = SettingsTab()
         self.settings_tab.logout_requested.connect(self.on_logout)
         
-        self.tabs.addTab(self.live_tab, qta.icon('fa5s.video'), "Live Surveillance")
+
         self.tabs.addTab(self.video_tab, qta.icon('fa5s.search'), "Video Analysis (AI)")
         self.tabs.addTab(self.grid_tab, qta.icon('fa5s.th'), "CCTV Grid")
         self.tabs.addTab(self.settings_tab, qta.icon('fa5s.cog'), "Settings")
@@ -2159,7 +2159,6 @@ class MainWindow(QMainWindow):
             self.close()
 
     def closeEvent(self, event):
-        self.live_tab.stop_camera()
         self.multi_cam.stop()
         event.accept()
 
