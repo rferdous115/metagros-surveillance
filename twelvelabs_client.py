@@ -208,15 +208,38 @@ If no relevant moments found, respond with "NONE"."""
             return moments
         
         import re
-        # Pattern: number-number: description (confidence)
-        pattern = r'(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*:\s*([^(]+)\s*\((\w+)\)'
         
-        matches = re.findall(pattern, analysis_text)
+        def parse_time(time_str: str) -> float:
+            """Convert time string to seconds. Handles mm:ss, m:ss, or plain seconds."""
+            time_str = time_str.strip()
+            if ':' in time_str:
+                parts = time_str.split(':')
+                if len(parts) == 2:
+                    mins = float(parts[0])
+                    secs = float(parts[1])
+                    return mins * 60 + secs
+                elif len(parts) == 3:  # h:mm:ss
+                    hours = float(parts[0])
+                    mins = float(parts[1])
+                    secs = float(parts[2])
+                    return hours * 3600 + mins * 60 + secs
+            return float(time_str)
+        
+        # Pattern 1: seconds format: 120-150: description (confidence)
+        pattern_seconds = r'(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*:\s*([^(]+)\s*\((\w+)\)'
+        
+        # Pattern 2: mm:ss format: 2:00-2:30: description (confidence)
+        pattern_mmss = r'(\d+:\d{2})\s*[-–]\s*(\d+:\d{2})\s*:\s*([^(]+)\s*\((\w+)\)'
+        
+        # Try mm:ss pattern first (more specific)
+        matches = re.findall(pattern_mmss, analysis_text)
+        if not matches:
+            matches = re.findall(pattern_seconds, analysis_text)
         
         for match in matches:
             try:
-                start = float(match[0])
-                end = float(match[1])
+                start = parse_time(match[0])
+                end = parse_time(match[1])
                 label = match[2].strip()
                 conf_str = match[3].lower()
                 
@@ -233,16 +256,36 @@ If no relevant moments found, respond with "NONE"."""
             except (ValueError, IndexError):
                 continue
         
-        # If no structured matches, create a generic moment if analysis suggests something was found
+        # If no structured matches, try to extract any time ranges mentioned
         if not moments and len(analysis_text) > 20 and "NONE" not in analysis_text.upper():
-            moments.append({
-                'start': 0,
-                'end': 10,
-                'confidence': 0.5,
-                'video_id': video_id,
-                'query': query,
-                'label': analysis_text[:50].strip()
-            })
+            # Try to find any time-like patterns in the text
+            time_pattern = r'(\d+:\d{2}|\d+(?:\.\d+)?\s*(?:s|sec|seconds)?)'
+            times = re.findall(time_pattern, analysis_text)
+            if len(times) >= 2:
+                try:
+                    start = parse_time(times[0].replace('s', '').replace('sec', '').replace('seconds', '').strip())
+                    end = parse_time(times[1].replace('s', '').replace('sec', '').replace('seconds', '').strip())
+                    moments.append({
+                        'start': start,
+                        'end': end,
+                        'confidence': 0.5,
+                        'video_id': video_id,
+                        'query': query,
+                        'label': analysis_text[:80].strip()
+                    })
+                except ValueError:
+                    pass
+            
+            # Last resort: generic moment
+            if not moments:
+                moments.append({
+                    'start': 0,
+                    'end': 10,
+                    'confidence': 0.5,
+                    'video_id': video_id,
+                    'query': query,
+                    'label': analysis_text[:50].strip()
+                })
         
         return moments
     

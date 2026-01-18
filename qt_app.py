@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QSplitter, QSpinBox, QMessageBox, QDialog, QFrame, QFormLayout
 )
 from PySide6.QtCore import Qt, QTimer, QUrl, QThread, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QPixmap, QIcon
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 import qtawesome as qta
 
@@ -2060,7 +2060,8 @@ class SettingsTab(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("METAGROS | AI SURVEILLANCE PLATFORM")
+        self.setWindowTitle("Metagros")
+        self.setWindowIcon(QIcon())  # Remove default icon
         self.setGeometry(100, 100, 1400, 900)
         
         # Global Polished Stylesheet
