@@ -1,0 +1,298 @@
+"""
+Twelve Labs API Client Wrapper
+
+Provides a simplified interface for video analysis using Twelve Labs.
+"""
+import os
+import time
+from typing import Generator, Optional
+from twelvelabs import TwelveLabs
+
+
+class TwelveLabsClient:
+    """Client wrapper for Twelve Labs video analysis API."""
+    
+    DEFAULT_INDEX_NAME = "surveillance_app_index"
+    
+    def __init__(self, api_key: Optional[str] = None):
+        """Initialize the Twelve Labs client.
+        
+        Args:
+            api_key: API key. If not provided, reads from TWELVE_LABS_API_KEY env var.
+        """
+        self.api_key = api_key or os.environ.get("TWELVE_LABS_API_KEY")
+        if not self.api_key:
+            raise ValueError("Twelve Labs API key required. Set TWELVE_LABS_API_KEY or pass api_key.")
+        
+        self.client = TwelveLabs(api_key=self.api_key)
+        self.index_id = None
+        self._ensure_index()
+    
+    def _ensure_index(self):
+        """Create or retrieve the default index."""
+        # Check if index already exists
+        try:
+            indexes = self.client.indexes.list()
+            for idx in indexes:
+                # SDK uses index_name attribute
+                if getattr(idx, 'index_name', None) == self.DEFAULT_INDEX_NAME:
+                    self.index_id = idx.id
+                    print(f"Using existing index: {self.index_id}")
+                    return
+        except Exception as e:
+            print(f"Error listing indexes: {e}")
+        
+        # Create new index
+        index = self.client.indexes.create(
+            index_name=self.DEFAULT_INDEX_NAME,
+            models=[{"model_name": "pegasus1.2", "model_options": ["visual", "audio"]}]
+        )
+        self.index_id = index.id
+        print(f"Created new index: {self.index_id}")
+    
+    def upload_and_index_video(self, file_path: str, callback=None) -> str:
+        """Upload a video file and index it.
+        
+        Args:
+            file_path: Path to the video file
+            callback: Optional callback(status: str) for progress updates
+            
+        Returns:
+            indexed_asset_id: The ID of the indexed asset
+        """
+        if callback:
+            callback("Uploading video...")
+        
+        # Upload the file
+        with open(file_path, "rb") as f:
+            asset = self.client.assets.create(
+                method="direct",
+                file=f
+            )
+        
+        if callback:
+            callback(f"Upload complete. Indexing...")
+        
+        # Index the asset
+        indexed_asset = self.client.indexes.indexed_assets.create(
+            index_id=self.index_id,
+            asset_id=asset.id
+        )
+        
+        # Wait for indexing to complete
+        while True:
+            indexed_asset = self.client.indexes.indexed_assets.retrieve(
+                index_id=self.index_id,
+                indexed_asset_id=indexed_asset.id
+            )
+            
+            if callback:
+                callback(f"Indexing: {indexed_asset.status}")
+            
+            if indexed_asset.status == "ready":
+                break
+            elif indexed_asset.status == "failed":
+                raise RuntimeError("Video indexing failed")
+            
+            time.sleep(3)
+        
+        if callback:
+            callback("Ready for analysis!")
+        
+        return indexed_asset.id
+    
+    def analyze(self, indexed_asset_id: str, prompt: str) -> Generator[str, None, None]:
+        """Analyze a video with a natural language prompt.
+        
+        Args:
+            indexed_asset_id: The ID of the indexed video
+            prompt: The analysis prompt
+            
+        Yields:
+            Text chunks from the streaming response
+        """
+        text_stream = self.client.analyze_stream(
+            video_id=indexed_asset_id,
+            prompt=prompt
+        )
+        
+        for text in text_stream:
+            if text.event_type == "text_generation":
+                yield text.text
+    
+    def analyze_sync(self, indexed_asset_id: str, prompt: str) -> str:
+        """Analyze a video and return complete response (non-streaming).
+        
+        Args:
+            indexed_asset_id: The ID of the indexed video
+            prompt: The analysis prompt
+            
+        Returns:
+            Complete analysis text
+        """
+        result = []
+        for chunk in self.analyze(indexed_asset_id, prompt):
+            result.append(chunk)
+        return "".join(result)
+    
+    def analyze_video(self, file_path: str, prompt: str) -> str:
+        """Upload a video file and analyze it with a prompt (convenience method).
+        
+        Args:
+            file_path: Path to the video file
+            prompt: The analysis prompt
+            
+        Returns:
+            Analysis text result
+        """
+        # Upload and index
+        indexed_asset_id = self.upload_and_index_video(file_path)
+        
+        # Analyze
+        return self.analyze_sync(indexed_asset_id, prompt)
+    
+    def search_moments(self, query: str, top_k: int = 5) -> list:
+        """Search for moments in indexed videos matching a query.
+        
+        Note: Since the index uses Pegasus (not Marengo), we use analyze
+        to find relevant moments instead of the search API.
+        
+        Args:
+            query: Natural language search query
+            top_k: Maximum number of results to return
+            
+        Returns:
+            List of dicts with start, end, confidence, video_id, query
+        """
+        try:
+            # Get the most recent indexed asset
+            assets = self.get_indexed_assets()
+            if not assets:
+                print("No indexed assets found")
+                return []
+            
+            # Use the first/most recent asset
+            asset = assets[0]
+            asset_id = getattr(asset, 'id', None)
+            if not asset_id:
+                print("Could not get asset ID")
+                return []
+            
+            # Use analyze to find moments matching the query
+            prompt = f"""Analyze this video and find all moments where: {query}
+
+For each moment found, provide:
+- Start time in seconds
+- End time in seconds  
+- Brief description (5 words max)
+- Confidence (high/medium/low)
+
+Format each finding as: [START_SEC]-[END_SEC]: [DESCRIPTION] ([CONFIDENCE])
+If no relevant moments found, respond with "NONE"."""
+
+            result = self.analyze_sync(asset_id, prompt)
+            
+            # Parse the response to extract moments
+            moments = self._parse_analysis_moments(result, query, asset_id)
+            return moments[:top_k]
+            
+        except Exception as e:
+            print(f"Search error: {e}")
+            return []
+    
+    def _parse_analysis_moments(self, analysis_text: str, query: str, video_id: str) -> list:
+        """Parse analysis response to extract moment timestamps."""
+        moments = []
+        
+        if not analysis_text or "NONE" in analysis_text.upper():
+            return moments
+        
+        import re
+        # Pattern: number-number: description (confidence)
+        pattern = r'(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*:\s*([^(]+)\s*\((\w+)\)'
+        
+        matches = re.findall(pattern, analysis_text)
+        
+        for match in matches:
+            try:
+                start = float(match[0])
+                end = float(match[1])
+                label = match[2].strip()
+                conf_str = match[3].lower()
+                
+                confidence = {"high": 0.9, "medium": 0.7, "low": 0.5}.get(conf_str, 0.6)
+                
+                moments.append({
+                    'start': start,
+                    'end': end,
+                    'confidence': confidence,
+                    'video_id': video_id,
+                    'query': query,
+                    'label': label
+                })
+            except (ValueError, IndexError):
+                continue
+        
+        # If no structured matches, create a generic moment if analysis suggests something was found
+        if not moments and len(analysis_text) > 20 and "NONE" not in analysis_text.upper():
+            moments.append({
+                'start': 0,
+                'end': 10,
+                'confidence': 0.5,
+                'video_id': video_id,
+                'query': query,
+                'label': analysis_text[:50].strip()
+            })
+        
+        return moments
+    
+    def search_multiple_queries(self, queries: list, top_k_per_query: int = 3) -> list:
+        """Search with multiple queries and combine results.
+        
+        Args:
+            queries: List of search query strings
+            top_k_per_query: Max results per query
+            
+        Returns:
+            Combined list of moments from all queries
+        """
+        all_moments = []
+        for query in queries:
+            moments = self.search_moments(query, top_k=top_k_per_query)
+            all_moments.extend(moments)
+        return all_moments
+    
+    def label_clip(self, indexed_asset_id: str, start: float, end: float) -> str:
+        """Generate a short label for a video clip.
+        
+        Args:
+            indexed_asset_id: The ID of the indexed video
+            start: Start time in seconds
+            end: End time in seconds
+            
+        Returns:
+            Short descriptive label (3-7 words)
+        """
+        try:
+            prompt = f"In 5 words or less, describe what happens between {start:.1f}s and {end:.1f}s."
+            result = self.analyze_sync(indexed_asset_id, prompt)
+            # Truncate to first sentence/7 words
+            words = result.split()[:7]
+            return ' '.join(words)
+        except Exception as e:
+            print(f"Label generation error: {e}")
+            return "Activity detected"
+    
+    def get_indexed_assets(self) -> list:
+        """Get list of all indexed assets.
+        
+        Returns:
+            List of indexed asset objects
+        """
+        try:
+            assets = self.client.indexes.indexed_assets.list(index_id=self.index_id)
+            return list(assets)
+        except Exception as e:
+            print(f"Error listing assets: {e}")
+            return []
+

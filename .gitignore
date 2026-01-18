@@ -1,0 +1,14 @@
+venv/
+build/
+dist/
+__pycache__/
+*.pyc
+*.exe
+*.pkg
+*.db
+*.pt
+*.spec
+*.log
+.DS_Store
+.vscode/
+.idea/
