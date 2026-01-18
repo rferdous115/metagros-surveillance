@@ -141,10 +141,9 @@ class LiveTab(QWidget):
             frame = self.camera.get_frame()
             if frame is not None:
                 frame = cv2.resize(frame, (640, 480))
-                locations, names, _ = self.face_handler.process_frame(frame)
-                self.last_locations = locations
-                self.last_names = names
-                frame = draw_faces_on_frame(frame, locations, names)
+                # Face detection disabled for performance
+                # locations, names, _ = self.face_handler.process_frame(frame)
+                # frame = draw_faces_on_frame(frame, locations, names)
                 self.video_label.setPixmap(convert_cv_qt(frame))
 
 
@@ -1488,8 +1487,8 @@ class GridTab(QWidget):
         # Deep Analyze button (Twelve Labs on-demand)
         self.btn_deep_analyze = QPushButton("Deep Analyze (Twelve Labs)")
         self.btn_deep_analyze.setIcon(qta.icon('fa5s.microscope'))
-        self.btn_deep_analyze.setStyleSheet("background-color: #9C27B0;")
-        self.btn_deep_analyze.clicked.connect(self.deep_analyze)
+        self.btn_deep_analyze.setStyleSheet("background-color: #9C27B0; color: white; font-weight: bold;")
+        self.btn_deep_analyze.clicked.connect(lambda: (print("[CLICK] Deep Analyze button pressed!"), self.deep_analyze()))
         self.btn_deep_analyze.setToolTip("Capture 5 sec clip and send to Twelve Labs for AI analysis")
         controls.addWidget(self.btn_deep_analyze)
         
@@ -1741,12 +1740,17 @@ class GridTab(QWidget):
     
     def deep_analyze(self):
         """Capture webcam clip and analyze with Twelve Labs (Async)."""
+        print("[DEBUG] Deep Analyze button clicked")
+        print(f"[DEBUG] API Key present: {bool(TWELVE_LABS_API_KEY)}")
+        
         if not TWELVE_LABS_API_KEY:
             self.monitor_status.setText("API Key Missing")
             QMessageBox.warning(self, "Missing API Key", "Please set TWELVE_LABS_API_KEY env var.")
             return
 
         self.btn_deep_analyze.setEnabled(False)
+        self.monitor_status.setText("Starting Deep Analysis...")
+        print("[DEBUG] Starting DeepAnalyzeWorker...")
         
         # Start Worker
         self.analyze_worker = DeepAnalyzeWorker(TWELVE_LABS_API_KEY)
@@ -1754,6 +1758,7 @@ class GridTab(QWidget):
         self.analyze_worker.finished.connect(self.on_analyze_finished)
         self.analyze_worker.error.connect(self.on_analyze_error)
         self.analyze_worker.start()
+        print("[DEBUG] Worker started")
         
     def on_analyze_finished(self, result: str):
         """Handle successful analysis."""

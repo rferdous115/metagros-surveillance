@@ -1,0 +1,7 @@
+opencv-python
+PySide6
+qtawesome
+ultralytics
+twelvelabs-client
+dlib
+face_recognition
