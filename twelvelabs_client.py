@@ -50,25 +50,119 @@ class TwelveLabsClient:
         self.index_id = index.id
         print(f"Created new index: {self.index_id}")
     
-    def upload_and_index_video(self, file_path: str, callback=None) -> str:
+    def preprocess_video(self, file_path: str, target_fps: int = 5, target_width: int = 640) -> str:
+        """Preprocess video for faster upload and indexing.
+        
+        Reduces framerate and resolution to optimize for Twelve Labs.
+        
+        Args:
+            file_path: Path to original video
+            target_fps: Target framerate (default 5fps)
+            target_width: Target width in pixels (height scales proportionally)
+            
+        Returns:
+            Path to preprocessed video (temp file)
+        """
+        import cv2
+        import tempfile
+        
+        cap = cv2.VideoCapture(file_path)
+        if not cap.isOpened():
+            return file_path  # Return original if can't open
+        
+        # Get original properties
+        orig_fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Calculate new dimensions (maintain aspect ratio)
+        scale = target_width / orig_width
+        new_width = target_width
+        new_height = int(orig_height * scale)
+        # Ensure even dimensions for codec compatibility
+        new_height = new_height if new_height % 2 == 0 else new_height + 1
+        
+        # Calculate frame skip (to reduce framerate)
+        frame_skip = max(1, int(orig_fps / target_fps))
+        
+        # Create temp output file
+        fd, output_path = tempfile.mkstemp(suffix='.mp4')
+        import os
+        os.close(fd)
+        
+        writer = cv2.VideoWriter(
+            output_path,
+            cv2.VideoWriter_fourcc(*'mp4v'),
+            target_fps,
+            (new_width, new_height)
+        )
+        
+        frame_count = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Only keep every Nth frame
+            if frame_count % frame_skip == 0:
+                resized = cv2.resize(frame, (new_width, new_height))
+                writer.write(resized)
+            
+            frame_count += 1
+        
+        cap.release()
+        writer.release()
+        
+        # Log file size comparison
+        import os
+        orig_size = os.path.getsize(file_path) / (1024 * 1024)  # MB
+        new_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
+        reduction = (1 - new_size / orig_size) * 100 if orig_size > 0 else 0
+        
+        print(f"[Preprocess] {orig_fps:.0f}fps → {target_fps}fps, {orig_width}x{orig_height} → {new_width}x{new_height}")
+        print(f"[Preprocess] File size: {orig_size:.1f}MB → {new_size:.1f}MB ({reduction:.0f}% smaller)")
+        
+        return output_path
+    
+    def upload_and_index_video(self, file_path: str, callback=None, preprocess: bool = True) -> str:
         """Upload a video file and index it.
         
         Args:
             file_path: Path to the video file
             callback: Optional callback(status: str) for progress updates
+            preprocess: If True, reduce framerate/resolution before upload (default True)
             
         Returns:
             indexed_asset_id: The ID of the indexed asset
         """
+        import os
+        
+        # Preprocess video for faster upload/indexing
+        preprocessed_path = None
+        if preprocess:
+            if callback:
+                callback("Optimizing video (reducing framerate)...")
+            preprocessed_path = self.preprocess_video(file_path)
+            upload_path = preprocessed_path
+        else:
+            upload_path = file_path
+        
         if callback:
             callback("Uploading video...")
         
         # Upload the file
-        with open(file_path, "rb") as f:
+        with open(upload_path, "rb") as f:
             asset = self.client.assets.create(
                 method="direct",
                 file=f
             )
+        
+        # Clean up preprocessed temp file
+        if preprocessed_path and preprocessed_path != file_path:
+            try:
+                os.remove(preprocessed_path)
+            except:
+                pass
         
         if callback:
             callback(f"Upload complete. Indexing...")
@@ -179,15 +273,19 @@ class TwelveLabsClient:
                 return []
             
             # Use analyze to find moments matching the query
-            prompt = f"""Analyze this video and find all moments where: {query}
+            prompt = f"""Analyze this entire video carefully and find ALL moments where: {query}
 
-For each moment found, provide:
+IMPORTANT: List EVERY occurrence, even if the same event happens multiple times. Do not summarize or combine repeated events.
+
+For EACH moment found, provide:
 - Start time in seconds
 - End time in seconds  
 - Brief description (5 words max)
 - Confidence (high/medium/low)
 
-Format each finding as: [START_SEC]-[END_SEC]: [DESCRIPTION] ([CONFIDENCE])
+Format each finding on its own line as: [START_SEC]-[END_SEC]: [DESCRIPTION] ([CONFIDENCE])
+Example: 15-22: Person near door (high)
+
 If no relevant moments found, respond with "NONE"."""
 
             result = self.analyze_sync(asset_id, prompt)
