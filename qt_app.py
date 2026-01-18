@@ -1043,14 +1043,15 @@ class GridTab(QWidget):
         
 # ==================== LOCAL AI WORKER (YOLO-powered) ====================
 class DeepAnalyzeWorker(QThread):
-    """Worker thread for capturing and analyzing video without freezing UI."""
+    """Captures frames from the existing multi-camera and sends to Twelve Labs."""
     status_update = Signal(str)
     finished = Signal(str)
     error = Signal(str)
 
-    def __init__(self, api_key):
+    def __init__(self, api_key, multi_cam):
         super().__init__()
         self.api_key = api_key
+        self.multi_cam = multi_cam
 
     def run(self):
         import cv2
@@ -1060,43 +1061,57 @@ class DeepAnalyzeWorker(QThread):
         from twelvelabs_client import TwelveLabsClient
 
         try:
-            # 1. Capture Video (Webcam)
+            # 1. Capture Video from EXISTING multi_cam (no new webcam!)
             self.status_update.emit("Capturing 5s clip...")
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                raise Exception("Could not open webcam")
             
-            # Use lower res for faster upload/analysis
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            # Get first active camera
+            active_cam_id = None
+            for cam_id in self.multi_cam.cameras.keys():
+                active_cam_id = cam_id
+                break
+            
+            if not active_cam_id:
+                raise Exception("No active camera in grid")
             
             # Temp file
             fd, temp_path = tempfile.mkstemp(suffix='.mp4')
             os.close(fd)
             
+            # Get frame size from first frame
+            first_frame = self.multi_cam.get_frame(active_cam_id)
+            if first_frame is None:
+                raise Exception("Could not get frame from camera")
+            
+            h, w = first_frame.shape[:2]
+            fps = 15  # Lower FPS for smaller file
+            
             writer = cv2.VideoWriter(
                 temp_path, 
                 cv2.VideoWriter_fourcc(*'mp4v'), 
                 fps, 
-                (640, 480)
+                (w, h)
             )
             
-            # Record 5 seconds
+            # Record 5 seconds by grabbing frames from multicam
             start_time = time.time()
+            frame_interval = 1.0 / fps
+            last_frame_time = 0
+            
             while (time.time() - start_time) < 5.0:
-                ret, frame = cap.read()
-                if ret:
-                    writer.write(frame)
+                current_time = time.time() - start_time
+                if current_time - last_frame_time >= frame_interval:
+                    frame = self.multi_cam.get_frame(active_cam_id)
+                    if frame is not None:
+                        writer.write(frame)
+                    last_frame_time = current_time
+                time.sleep(0.01)  # Small sleep to prevent CPU spin
             
             writer.release()
-            cap.release()
             
             # 2. Upload & Analyze
             self.status_update.emit("Uploading to Twelve Labs...")
             client = TwelveLabsClient(self.api_key)
             
-            # Use the exact prompt for "describe"
             self.status_update.emit("AI Analysis in progress...")
             analysis = client.analyze_video(temp_path, "Describe the situation, potential threats, and activities in detail.")
             
@@ -1516,13 +1531,14 @@ class GridTab(QWidget):
         right_panel.addWidget(QLabel("<b>Detected Events</b>"))
         self.event_log = QTextEdit()
         self.event_log.setReadOnly(True)
-        self.event_log.setMaximumHeight(150)
+        self.event_log.setMinimumHeight(200)
         self.event_log.setStyleSheet("""
             QTextEdit {
                 background-color: #1e1e1e;
                 color: #4CAF50;
                 font-family: Consolas, monospace;
-                font-size: 11px;
+                font-size: 13px;
+                padding: 8px;
             }
         """)
         right_panel.addWidget(self.event_log)
@@ -1753,7 +1769,7 @@ class GridTab(QWidget):
         print("[DEBUG] Starting DeepAnalyzeWorker...")
         
         # Start Worker
-        self.analyze_worker = DeepAnalyzeWorker(TWELVE_LABS_API_KEY)
+        self.analyze_worker = DeepAnalyzeWorker(TWELVE_LABS_API_KEY, self.multi_cam)
         self.analyze_worker.status_update.connect(self.monitor_status.setText)
         self.analyze_worker.finished.connect(self.on_analyze_finished)
         self.analyze_worker.error.connect(self.on_analyze_error)
